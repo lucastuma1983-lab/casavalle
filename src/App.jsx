@@ -182,7 +182,13 @@ const Login = ({ onLogin, toast }) => {
   const handleRecovery = async () => {
     if (!email.trim() || !selectedUser) return;
     setLoading(true);
-    // Save email and reset PIN
+    // Validate email matches stored email (if one exists)
+    const { data: userData } = await supabase.from("users").select("email").eq("id", selectedUser.id).single();
+    if (userData?.email && userData.email.toLowerCase() !== email.trim().toLowerCase()) {
+      setLoading(false);
+      setError("El email no coincide con el registrado.");
+      return;
+    }
     await supabase.from("users").update({ email: email.trim(), pin_hash: null, failed_attempts: 0, locked_until: null }).eq("id", selectedUser.id);
     setLoading(false);
     toast?.("PIN reseteado. Crea uno nuevo.", "success");
@@ -223,6 +229,7 @@ const Login = ({ onLogin, toast }) => {
             <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>Ingresa tu email para resetear el PIN</p>
           </div>
           <Input label="EMAIL" type="email" value={email} onChange={setEmail} placeholder="tu@email.com" />
+          {error && <p style={{ color: T.red, fontSize: 13, fontFamily: F, textAlign: "center", marginBottom: 12 }}>{error}</p>}
           <Btn onClick={handleRecovery} disabled={!email.trim() || loading} style={{ width: "100%", marginBottom: 12 }}>
             {loading ? "Procesando..." : "Resetear PIN"}
           </Btn>
@@ -319,7 +326,7 @@ const ExpForm = ({ me, onSave, editExp, onCancel }) => {
     const exp = {
       id: editExp?.id || uid(),
       amount: amt, category, description: desc.trim(), note: note.trim(), photo,
-      paid_by: me.id, split_among: splitAmong, split_type: splitType,
+      paid_by: editExp?.paid_by || me.id, split_among: splitAmong, split_type: splitType,
       custom_split: splitType !== "equal" ? customSplit : null,
       month: editExp?.month || monthKey(),
       is_recurring: editExp?.is_recurring || false,
@@ -439,7 +446,7 @@ const ExpForm = ({ me, onSave, editExp, onCancel }) => {
 // HOME DASHBOARD — month view with balances, recent expenses
 // ============================================================================
 
-const Home = ({ exps, me, month, setMonth, allExps, onEdit, onDelete, toast }) => {
+const Home = ({ exps, me, month, setMonth, onEdit, onDelete, toast }) => {
   const filtered = exps.filter((e) => e.month === month);
   const total = filtered.reduce((s, e) => s + parseFloat(e.amount), 0);
   const { balances } = calcSettlements(filtered);
@@ -447,6 +454,7 @@ const Home = ({ exps, me, month, setMonth, allExps, onEdit, onDelete, toast }) =
   const remaining = daysLeft(month);
   const showReminder = remaining <= 7 && remaining > 0 && month === monthKey();
   const [expandedExp, setExpandedExp] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   return (
     <div>
@@ -519,7 +527,7 @@ const Home = ({ exps, me, month, setMonth, allExps, onEdit, onDelete, toast }) =
               {isExpanded && canEdit && (
                 <div style={{ display: "flex", gap: 8, padding: "8px 0 4px", animation: "fadeIn 0.2s ease" }}>
                   <Btn small onClick={() => onEdit(e)} color={T.c2}>✏️ Editar</Btn>
-                  <Btn small onClick={() => onDelete(e)} color={T.red + "30"} style={{ color: T.red }}>🗑 Eliminar</Btn>
+                  <Btn small onClick={() => setConfirmDelete(e)} color={T.red + "30"} style={{ color: T.red }}>🗑 Eliminar</Btn>
                 </div>
               )}
               {isExpanded && !canEdit && (
@@ -528,6 +536,24 @@ const Home = ({ exps, me, month, setMonth, allExps, onEdit, onDelete, toast }) =
             </div>;
           })}
       </Card>
+
+      <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="¿Eliminar gasto?">
+        {confirmDelete && <>
+          <div style={{ background: T.c2, borderRadius: 10, padding: 14, marginBottom: 16 }}>
+            <p style={{ color: T.w, fontSize: 14, fontWeight: 700, fontFamily: F, margin: "0 0 4px" }}>
+              {CAT_MAP[confirmDelete.category]?.icon} {confirmDelete.description || CAT_MAP[confirmDelete.category]?.label}
+            </p>
+            <p style={{ color: T.accent2, fontSize: 18, fontWeight: 800, fontFamily: F, margin: 0 }}>{fmt(confirmDelete.amount)}</p>
+            <p style={{ color: T.tm, fontSize: 11, fontFamily: F, margin: "4px 0 0" }}>
+              {new Date(confirmDelete.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric" })}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn onClick={() => setConfirmDelete(null)} color={T.b} style={{ flex: 1 }}>Cancelar</Btn>
+            <Btn onClick={() => { onDelete(confirmDelete); setConfirmDelete(null); }} color={T.red} style={{ flex: 1 }}>Eliminar</Btn>
+          </div>
+        </>}
+      </Modal>
     </div>
   );
 };
@@ -537,25 +563,55 @@ const Home = ({ exps, me, month, setMonth, allExps, onEdit, onDelete, toast }) =
 // ============================================================================
 
 const RecurringView = ({ recs, me, refresh, toast }) => {
-  const [showAdd, setShowAdd] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [editingRec, setEditingRec] = useState(null);
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("hipoteca");
   const [desc, setDesc] = useState("");
   const [splitAmong, setSplitAmong] = useState(USERS.map((u) => u.id));
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const resetForm = () => {
+    setAmount(""); setCategory("hipoteca"); setDesc(""); setSplitAmong(USERS.map((u) => u.id));
+    setEditingRec(null); setShowForm(false);
+  };
+
+  const openEdit = (rec) => {
+    setEditingRec(rec);
+    setAmount(String(rec.amount));
+    setCategory(rec.category);
+    setDesc(rec.description || "");
+    setSplitAmong(rec.split_among || USERS.map((u) => u.id));
+    setShowForm(true);
+  };
 
   const handleSave = async () => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
     setSaving(true);
-    await supabase.from("recurring").insert({ id: uid(), amount: amt, category, description: desc.trim(), paid_by: me.id, split_among: splitAmong, split_type: "equal", active: true, paused_months: [] });
-    setSaving(false); setShowAdd(false); setAmount(""); setDesc("");
-    toast?.("Recurrente creado ✓", "success");
+    if (editingRec) {
+      await supabase.from("recurring").update({
+        amount: amt, category, description: desc.trim(),
+        split_among: splitAmong, updated_at: new Date().toISOString(),
+      }).eq("id", editingRec.id);
+      toast?.("Recurrente actualizado ✓", "success");
+    } else {
+      await supabase.from("recurring").insert({
+        id: uid(), amount: amt, category, description: desc.trim(),
+        paid_by: me.id, split_among: splitAmong, split_type: "equal",
+        active: true, paused_months: [],
+      });
+      toast?.("Recurrente creado ✓", "success");
+    }
+    setSaving(false);
+    resetForm();
     refresh();
   };
 
   const toggleActive = async (id, current) => {
     await supabase.from("recurring").update({ active: !current }).eq("id", id);
+    toast?.(!current ? "Recurrente activado" : "Recurrente desactivado", "success");
     refresh();
   };
 
@@ -571,6 +627,7 @@ const RecurringView = ({ recs, me, refresh, toast }) => {
   const deleteRec = async (id) => {
     await supabase.from("recurring").delete().eq("id", id);
     toast?.("Recurrente eliminado", "success");
+    setConfirmDelete(null);
     refresh();
   };
 
@@ -578,16 +635,27 @@ const RecurringView = ({ recs, me, refresh, toast }) => {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <h3 style={{ color: T.w, fontSize: 18, fontWeight: 800, fontFamily: F }}>🔄 Recurrentes</h3>
-        <Btn small onClick={() => setShowAdd(!showAdd)}>{showAdd ? "Cancelar" : "+ Nuevo"}</Btn>
+        <Btn small onClick={() => { if (showForm) resetForm(); else setShowForm(true); }}>{showForm ? "Cancelar" : "+ Nuevo"}</Btn>
       </div>
 
-      {showAdd && (
+      {showForm && (
         <Card style={{ marginBottom: 16 }}>
-          <Input label="MONTO MENSUAL" type="number" value={amount} onChange={setAmount} placeholder="0.00" />
-          <label style={{ color: T.ts, fontSize: 12, fontWeight: 700, fontFamily: F, display: "block", marginBottom: 6 }}>CATEGORÍA</label>
-          <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: "100%", background: T.c2, border: `1px solid ${T.b}`, borderRadius: 10, padding: "10px 14px", color: T.w, fontSize: 15, fontFamily: F, outline: "none", marginBottom: 14 }}>
-            {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
-          </select>
+          <h4 style={{ color: T.w, fontSize: 15, fontWeight: 800, fontFamily: F, marginBottom: 14 }}>
+            {editingRec ? "✏️ Editar recurrente" : "➕ Nuevo recurrente"}
+          </h4>
+          <Input label="MONTO MENSUAL" type="number" value={amount} onChange={setAmount} placeholder="0.00" inputMode="decimal" />
+          <label style={{ color: T.ts, fontSize: 12, fontWeight: 700, fontFamily: F, display: "block", marginBottom: 8 }}>CATEGORÍA</label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 14, maxHeight: 220, overflowY: "auto", paddingRight: 4 }}>
+            {CATEGORIES.map((c) => (
+              <button key={c.id} onClick={() => setCategory(c.id)} style={{
+                background: category === c.id ? T.accent + "30" : T.c2, border: `1.5px solid ${category === c.id ? T.accent : T.b}`,
+                borderRadius: 10, padding: "8px 4px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+              }}>
+                <span style={{ fontSize: 18 }}>{c.icon}</span>
+                <span style={{ color: category === c.id ? T.w : T.tm, fontSize: 9, fontWeight: 600, fontFamily: F }}>{c.label}</span>
+              </button>
+            ))}
+          </div>
           <Input label="DESCRIPCIÓN" value={desc} onChange={setDesc} placeholder="Ej: Mensualidad hipoteca" />
           <label style={{ color: T.ts, fontSize: 12, fontWeight: 700, fontFamily: F, display: "block", marginBottom: 8 }}>DIVIDIR ENTRE</label>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 14 }}>
@@ -600,15 +668,21 @@ const RecurringView = ({ recs, me, refresh, toast }) => {
               </button>;
             })}
           </div>
-          <Btn onClick={handleSave} disabled={!parseFloat(amount) || saving} style={{ width: "100%" }}>{saving ? "Guardando..." : "Guardar"}</Btn>
+          <div style={{ display: "flex", gap: 10 }}>
+            {editingRec && <Btn onClick={resetForm} color={T.b} style={{ flex: 1 }}>Cancelar</Btn>}
+            <Btn onClick={handleSave} disabled={!parseFloat(amount) || saving} style={{ flex: 1 }}>
+              {saving ? "Guardando..." : editingRec ? "Actualizar" : "Guardar"}
+            </Btn>
+          </div>
         </Card>
       )}
 
-      {recs.length === 0 ? <EmptyState icon="🔄" title="Sin recurrentes" subtitle="Agrega pagos mensuales fijos" /> :
+      {recs.length === 0 && !showForm ? <EmptyState icon="🔄" title="Sin recurrentes" subtitle="Agrega pagos mensuales fijos" /> :
         recs.map((r) => {
           const cat = CAT_MAP[r.category];
           const user = USER_MAP[r.paid_by];
           const isPausedThisMonth = (r.paused_months || []).includes(monthKey());
+          const isOwner = r.paid_by === me.id;
           return <Card key={r.id} style={{ marginBottom: 10, opacity: r.active && !isPausedThisMonth ? 1 : 0.5 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontSize: 24 }}>{cat?.icon}</span>
@@ -616,17 +690,34 @@ const RecurringView = ({ recs, me, refresh, toast }) => {
                 <p style={{ color: T.w, fontSize: 14, fontWeight: 700, fontFamily: F, margin: 0 }}>{r.description || cat?.label}</p>
                 <p style={{ color: T.tm, fontSize: 11, fontFamily: F, margin: 0 }}>{user?.emoji} {user?.name} · ÷{r.split_among?.length || USERS.length}
                   {isPausedThisMonth && <span style={{ color: T.yellow }}> · Pausado este mes</span>}
+                  {!r.active && <span style={{ color: T.red }}> · Inactivo</span>}
                 </p>
               </div>
               <span style={{ color: T.w, fontSize: 16, fontWeight: 800, fontFamily: F }}>{fmt(r.amount)}</span>
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
               <button onClick={() => toggleActive(r.id, r.active)} style={{ background: "none", border: `1px solid ${T.b}`, borderRadius: 8, padding: "4px 10px", cursor: "pointer", color: T.tm, fontSize: 11, fontFamily: F }}>{r.active ? "⏸ Desactivar" : "▶️ Activar"}</button>
-              <button onClick={() => togglePauseMonth(r)} style={{ background: "none", border: `1px solid ${T.yellow}40`, borderRadius: 8, padding: "4px 10px", cursor: "pointer", color: T.yellow, fontSize: 11, fontFamily: F }}>{isPausedThisMonth ? "▶️ Reanudar mes" : "⏭ Saltar mes"}</button>
-              <button onClick={() => deleteRec(r.id)} style={{ background: "none", border: `1px solid ${T.red}40`, borderRadius: 8, padding: "4px 10px", cursor: "pointer", color: T.red, fontSize: 11, fontFamily: F }}>🗑</button>
+              {r.active && <button onClick={() => togglePauseMonth(r)} style={{ background: "none", border: `1px solid ${T.yellow}40`, borderRadius: 8, padding: "4px 10px", cursor: "pointer", color: T.yellow, fontSize: 11, fontFamily: F }}>{isPausedThisMonth ? "▶️ Reanudar mes" : "⏭ Saltar mes"}</button>}
+              {isOwner && <button onClick={() => openEdit(r)} style={{ background: "none", border: `1px solid ${T.blue}40`, borderRadius: 8, padding: "4px 10px", cursor: "pointer", color: T.blue, fontSize: 11, fontFamily: F }}>✏️ Editar</button>}
+              {isOwner && <button onClick={() => setConfirmDelete(r)} style={{ background: "none", border: `1px solid ${T.red}40`, borderRadius: 8, padding: "4px 10px", cursor: "pointer", color: T.red, fontSize: 11, fontFamily: F }}>🗑</button>}
             </div>
           </Card>;
         })}
+
+      <Modal open={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="¿Eliminar recurrente?">
+        {confirmDelete && <>
+          <div style={{ background: T.c2, borderRadius: 10, padding: 14, marginBottom: 16 }}>
+            <p style={{ color: T.w, fontSize: 14, fontWeight: 700, fontFamily: F, margin: "0 0 4px" }}>
+              {CAT_MAP[confirmDelete.category]?.icon} {confirmDelete.description || CAT_MAP[confirmDelete.category]?.label}
+            </p>
+            <p style={{ color: T.accent2, fontSize: 18, fontWeight: 800, fontFamily: F, margin: 0 }}>{fmt(confirmDelete.amount)} / mes</p>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn onClick={() => setConfirmDelete(null)} color={T.b} style={{ flex: 1 }}>Cancelar</Btn>
+            <Btn onClick={() => deleteRec(confirmDelete.id)} color={T.red} style={{ flex: 1 }}>Eliminar</Btn>
+          </div>
+        </>}
+      </Modal>
     </div>
   );
 };
@@ -641,13 +732,14 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
   const monthSettlements = settlements.filter((s) => s.month === month);
   const fileRef = useRef(null);
   const [uploadingFor, setUploadingFor] = useState(null);
+  const [proofModal, setProofModal] = useState(null);
 
   const handleMarkPaid = async (tx) => {
     const existing = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
     if (existing) {
       await supabase.from("settlements").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", existing.id);
     } else {
-      await supabase.from("settlements").insert({ id: uid(), from_user: tx.from, to_user: tx.to, amount: tx.amount, month, status: "paid", paid_at: new Date().toISOString() });
+      await supabase.from("settlements").insert({ id: uid(), from_user: tx.from, to_user: tx.to, amount: tx.amount, settle_month: month, status: "paid", paid_at: new Date().toISOString() });
     }
     toast?.("Marcado como pagado ✓", "success");
     refresh();
@@ -668,7 +760,7 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
       if (existing) {
         await supabase.from("settlements").update({ proof_photo: ev.target.result, status: "paid", paid_at: new Date().toISOString() }).eq("id", existing.id);
       } else {
-        await supabase.from("settlements").insert({ id: uid(), from_user: tx.from, to_user: tx.to, amount: tx.amount, month, status: "paid", paid_at: new Date().toISOString(), proof_photo: ev.target.result });
+        await supabase.from("settlements").insert({ id: uid(), from_user: tx.from, to_user: tx.to, amount: tx.amount, settle_month: month, status: "paid", paid_at: new Date().toISOString(), proof_photo: ev.target.result });
       }
       toast?.("Comprobante subido ✓", "success");
       setUploadingFor(null);
@@ -744,13 +836,19 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
                 <button onClick={() => handleConfirm(settlement?.id)} style={{ background: T.green + "20", border: `1px solid ${T.green}40`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: T.green, fontSize: 11, fontFamily: F }}>✅ Confirmar recibido</button>
               )}
               {settlement?.proof_photo && (
-                <button onClick={() => window.open(settlement.proof_photo)} style={{ background: T.c, border: `1px solid ${T.b}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: T.tm, fontSize: 11, fontFamily: F }}>👁 Ver comprobante</button>
+                <button onClick={() => setProofModal(settlement.proof_photo)} style={{ background: T.c, border: `1px solid ${T.b}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: T.tm, fontSize: 11, fontFamily: F }}>👁 Ver comprobante</button>
               )}
             </div>
             {uploadingFor === i && <input type="file" accept="image/*" capture="environment" onChange={(e) => handleProof(e, tx)} style={{ marginTop: 8 }} />}
           </div>;
         })}
       </Card>
+
+      <Modal open={!!proofModal} onClose={() => setProofModal(null)} title="Comprobante de pago">
+        {proofModal && (
+          <img src={proofModal} alt="Comprobante" style={{ width: "100%", borderRadius: 12, maxHeight: "60vh", objectFit: "contain" }} />
+        )}
+      </Modal>
     </div>
   );
 };
@@ -759,7 +857,7 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
 // DASHBOARD — Rolling 12m stacked bars + KPIs
 // ============================================================================
 
-const AnalyticsDashboard = ({ allExps, month, budgets, setBudgets, toast }) => {
+const AnalyticsDashboard = ({ allExps, month, toast }) => {
   const [viewMode, setViewMode] = useState("category");
   const [hoveredMonth, setHoveredMonth] = useState(null);
   const [showLegend, setShowLegend] = useState(false);
@@ -859,13 +957,14 @@ const AnalyticsDashboard = ({ allExps, month, budgets, setBudgets, toast }) => {
 
       {/* Stacked bar chart */}
       <Card style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 180, position: "relative" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 200, position: "relative" }}>
           {monthData.map((d, i) => {
             const barH = d.total > 0 ? Math.max((d.total / maxTotal) * 100, 2) : 0;
             const isHovered = hoveredMonth === i;
-            return <div key={d.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer" }}
+            const shortAmt = d.total >= 1000 ? `${(d.total / 1000).toFixed(0)}k` : d.total > 0 ? Math.round(d.total) : "";
+            return <div key={d.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer", minWidth: 0 }}
               onMouseEnter={() => setHoveredMonth(i)} onMouseLeave={() => setHoveredMonth(null)} onClick={() => setHoveredMonth(isHovered ? null : i)}>
-              {isHovered && <span style={{ color: T.w, fontSize: 8, fontFamily: F, fontWeight: 700, marginBottom: 2 }}>{fmt(d.total)}</span>}
+              {d.total > 0 && <span style={{ color: isHovered ? T.w : T.tm, fontSize: 7, fontFamily: F, fontWeight: isHovered ? 800 : 600, marginBottom: 2, whiteSpace: "nowrap" }}>{isHovered ? fmt(d.total) : shortAmt}</span>}
               <div style={{ width: "100%", borderRadius: "4px 4px 0 0", overflow: "hidden", height: `${barH}%`, minHeight: d.total > 0 ? 4 : 0, display: "flex", flexDirection: "column-reverse", transition: "all 0.3s", opacity: hoveredMonth !== null && !isHovered ? 0.4 : 1, transform: isHovered ? "scaleX(1.15)" : "scaleX(1)" }}>
                 {activeKeys.map((k) => { const val = d.segments[k] || 0; if (!val) return null; return <div key={k} style={{ width: "100%", height: `${(val / d.total) * 100}%`, background: colorMap[k], minHeight: 1 }} />; })}
               </div>
@@ -909,10 +1008,31 @@ const AnalyticsDashboard = ({ allExps, month, budgets, setBudgets, toast }) => {
         </div>}
       </Card>
 
-      {/* Per-person KPI */}
+      {/* Per-person KPI breakdown */}
       <Card style={{ marginBottom: 16 }}>
-        <h4 style={{ color: T.w, fontSize: 14, fontWeight: 800, fontFamily: F, marginBottom: 8 }}>👤 Promedio por persona / mes</h4>
-        <p style={{ color: T.accent2, fontSize: 20, fontWeight: 900, fontFamily: F }}>{fmt(perPersonAvg)}</p>
+        <h4 style={{ color: T.w, fontSize: 14, fontWeight: 800, fontFamily: F, marginBottom: 12 }}>👤 Pago por persona (12 meses)</h4>
+        {USERS.map((u) => {
+          const userTotal = allExps.filter((e) => e.paid_by === u.id).reduce((s, e) => s + parseFloat(e.amount), 0);
+          const userAvg = userTotal / 12;
+          const pct = grandTotal > 0 ? (userTotal / grandTotal * 100) : 0;
+          return <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.b}20` }}>
+            <span style={{ fontSize: 18 }}>{u.emoji}</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                <span style={{ color: T.w, fontSize: 12, fontWeight: 700, fontFamily: F }}>{u.name}</span>
+                <span style={{ color: T.w, fontSize: 12, fontWeight: 700, fontFamily: F }}>{fmt(userTotal)}</span>
+              </div>
+              <div style={{ height: 4, background: T.c2, borderRadius: 2, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${pct}%`, background: u.color, borderRadius: 2 }} />
+              </div>
+              <span style={{ color: T.tm, fontSize: 10, fontFamily: F }}>{fmt(userAvg)}/mes · {pct.toFixed(0)}%</span>
+            </div>
+          </div>;
+        })}
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12, padding: "8px 0" }}>
+          <span style={{ color: T.tm, fontSize: 11, fontWeight: 700, fontFamily: F }}>Promedio por persona / mes</span>
+          <span style={{ color: T.accent2, fontSize: 14, fontWeight: 900, fontFamily: F }}>{fmt(perPersonAvg)}</span>
+        </div>
       </Card>
     </div>
   );
@@ -993,8 +1113,11 @@ const HistoryView = ({ allExps, me, onEdit, onDelete, toast }) => {
               <span style={{ color: T.w, fontSize: 13, fontWeight: 700, fontFamily: F }}>{e.description || cat.label}</span>
               <div style={{ color: T.tm, fontSize: 11, fontFamily: F }}>{user?.emoji} {user?.name} · {monthLabel(e.month)} · {new Date(e.created_at).toLocaleDateString("es-MX", { day: "numeric" })}</div>
             </div>
-            <span style={{ color: T.w, fontSize: 14, fontWeight: 800, fontFamily: F }}>{fmt(e.amount)}</span>
-            {canEdit && <button onClick={() => setConfirmDelete(e)} style={{ background: "none", border: "none", cursor: "pointer", color: T.tm, fontSize: 14, padding: 4, opacity: 0.5 }}>🗑</button>}
+            <span style={{ color: T.w, fontSize: 14, fontWeight: 800, fontFamily: F, whiteSpace: "nowrap" }}>{fmt(e.amount)}</span>
+            {canEdit && <div style={{ display: "flex", gap: 2 }}>
+              <button onClick={() => onEdit?.(e)} style={{ background: "none", border: "none", cursor: "pointer", color: T.tm, fontSize: 14, padding: 4, opacity: 0.6 }}>✏️</button>
+              <button onClick={() => setConfirmDelete(e)} style={{ background: "none", border: "none", cursor: "pointer", color: T.tm, fontSize: 14, padding: 4, opacity: 0.6 }}>🗑</button>
+            </div>}
           </div>;
         })}
 
@@ -1146,18 +1269,18 @@ export default function App() {
     try {
       const months12 = getLast12Months();
       const [expRes, recRes, bankRes, budgetRes, settleRes] = await Promise.all([
-        supabase.from("expenses").select("*").in("month", months12).order("created_at", { ascending: false }),
+        supabase.from("expenses").select("*").in("expense_month", months12).order("created_at", { ascending: false }),
         supabase.from("recurring").select("*").order("created_at", { ascending: false }),
         supabase.from("bank_accounts").select("*"),
         supabase.from("budgets").select("*"),
-        supabase.from("settlements").select("*").in("month", months12),
+        supabase.from("settlements").select("*").in("settle_month", months12),
       ]);
-      setAllExps(expRes.data || []);
+      setAllExps((expRes.data || []).map(e => ({ ...e, month: e.expense_month })));
       setRecs(recRes.data || []);
       setBank(bankRes.data || []);
       const bg = {}; (budgetRes.data || []).forEach((b) => { bg[b.category] = b.monthly_limit; });
       setBudgets(bg);
-      setSettlements(settleRes.data || []);
+      setSettlements((settleRes.data || []).map(s => ({ ...s, month: s.settle_month })));
     } catch (err) { console.error("Load error:", err); }
     setLoading(false);
   }, [me]);
@@ -1185,17 +1308,19 @@ export default function App() {
     const newExps = toApply.map((r) => ({
       id: uid(), amount: r.amount, category: r.category, description: r.description,
       paid_by: r.paid_by, split_among: r.split_among, split_type: r.split_type || "equal",
-      custom_split: null, month: mk, is_recurring: true, recurring_id: r.id,
+      custom_split: null, expense_month: mk, is_recurring: true, recurring_id: r.id,
     }));
     supabase.from("expenses").insert(newExps).then(() => loadData());
   }, [me, recs, allExps]);
 
   const handleSaveExp = async (exp) => {
+    const dbExp = { ...exp, expense_month: exp.month };
+    delete dbExp.month;
     const { data: existing } = await supabase.from("expenses").select("id").eq("id", exp.id).single();
     if (existing) {
-      await supabase.from("expenses").update(exp).eq("id", exp.id);
+      await supabase.from("expenses").update(dbExp).eq("id", exp.id);
     } else {
-      await supabase.from("expenses").insert(exp);
+      await supabase.from("expenses").insert(dbExp);
     }
     // Budget alert
     const catBudget = budgets[exp.category];
@@ -1223,8 +1348,6 @@ export default function App() {
 
   if (!me) return <><style>{CSS}</style><Login onLogin={setMe} toast={showToast} /></>;
 
-  const curMonthExps = allExps.filter((e) => e.month === month);
-
   return (
     <div style={{ background: T.bg, minHeight: "100vh", maxWidth: 480, margin: "0 auto", padding: "0 16px 80px" }}>
       <style>{CSS}</style>
@@ -1237,11 +1360,11 @@ export default function App() {
           <p style={{ color: T.tm, fontFamily: F }}>Cargando...</p>
         </div>
       ) : <>
-        {view === "home" && <Home exps={allExps} me={me} month={month} setMonth={setMonth} allExps={allExps} onEdit={handleEditExp} onDelete={handleDeleteExp} toast={showToast} />}
+        {view === "home" && <Home exps={allExps} me={me} month={month} setMonth={setMonth} onEdit={handleEditExp} onDelete={handleDeleteExp} toast={showToast} />}
         {view === "add" && <ExpForm me={me} onSave={handleSaveExp} editExp={editingExp} onCancel={editingExp ? () => { setEditingExp(null); setView("home"); } : undefined} />}
         {view === "recurring" && <RecurringView recs={recs} me={me} refresh={loadData} toast={showToast} />}
         {view === "settle" && <SettleView allExps={allExps} bank={bank} month={month} setMonth={setMonth} settlements={settlements} me={me} refresh={loadData} toast={showToast} />}
-        {view === "analytics" && <AnalyticsDashboard allExps={allExps} month={month} budgets={budgets} setBudgets={setBudgets} toast={showToast} />}
+        {view === "analytics" && <AnalyticsDashboard allExps={allExps} month={month} toast={showToast} />}
         {view === "history" && <HistoryView allExps={allExps} me={me} onEdit={handleEditExp} onDelete={handleDeleteExp} toast={showToast} />}
         {view === "bank" && <BankView bank={bank} me={me} refresh={loadData} toast={showToast} />}
       </>}
