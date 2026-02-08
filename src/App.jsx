@@ -734,12 +734,15 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
   const [uploadingFor, setUploadingFor] = useState(null);
   const [proofModal, setProofModal] = useState(null);
 
-  // Calculate net balances factoring in confirmed/paid settlements
+  // Net balances: only confirmed payments compensate the balance
   const netBalances = { ...balances };
   monthSettlements.forEach((s) => {
-    if (s.status === "paid" || s.status === "confirmed") {
-      netBalances[s.from_user] = (netBalances[s.from_user] || 0) + parseFloat(s.amount);
-      netBalances[s.to_user] = (netBalances[s.to_user] || 0) - parseFloat(s.amount);
+    if (s.status === "confirmed") {
+      const amt = parseFloat(s.amount);
+      // from_user paid their debt → balance goes toward 0
+      netBalances[s.from_user] = (netBalances[s.from_user] || 0) + amt;
+      // to_user received payment → balance goes toward 0
+      netBalances[s.to_user] = (netBalances[s.to_user] || 0) - amt;
     }
   });
 
