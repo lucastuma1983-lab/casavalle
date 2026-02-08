@@ -734,6 +734,20 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
   const [uploadingFor, setUploadingFor] = useState(null);
   const [proofModal, setProofModal] = useState(null);
 
+  // Calculate net balances factoring in confirmed/paid settlements
+  const netBalances = { ...balances };
+  monthSettlements.forEach((s) => {
+    if (s.status === "paid" || s.status === "confirmed") {
+      netBalances[s.from_user] = (netBalances[s.from_user] || 0) + parseFloat(s.amount);
+      netBalances[s.to_user] = (netBalances[s.to_user] || 0) - parseFloat(s.amount);
+    }
+  });
+
+  const allSettled = txns.length > 0 && txns.every((tx) => {
+    const s = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+    return s?.status === "confirmed";
+  });
+
   const handleMarkPaid = async (tx) => {
     const existing = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
     if (existing) {
@@ -777,14 +791,27 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
         <button onClick={() => setMonth(nextMonth(month))} style={{ background: "none", border: "none", color: T.tm, fontSize: 20, cursor: "pointer" }}>›</button>
       </div>
 
+      {allSettled && (
+        <div style={{ background: `linear-gradient(135deg, ${T.green}20, ${T.green}10)`, border: `1px solid ${T.green}40`, borderRadius: 12, padding: "14px 16px", marginBottom: 12, textAlign: "center" }}>
+          <p style={{ color: T.green, fontSize: 15, fontWeight: 800, fontFamily: F, margin: 0 }}>✅ Mes completamente liquidado</p>
+        </div>
+      )}
+
       <Card style={{ marginBottom: 16 }}>
-        <h4 style={{ color: T.w, fontSize: 14, fontWeight: 800, fontFamily: F, marginBottom: 12 }}>Balances</h4>
+        <h4 style={{ color: T.w, fontSize: 14, fontWeight: 800, fontFamily: F, marginBottom: 12 }}>Balances {allSettled ? "(liquidado)" : "(pendiente)"}</h4>
         {USERS.map((u) => {
           const bal = balances[u.id] || 0;
+          const net = Math.round((netBalances[u.id] || 0) * 100) / 100;
+          const hasPayments = Math.abs(net - bal) > 0.01;
           return <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.b}20` }}>
             <span style={{ fontSize: 20 }}>{u.emoji}</span>
             <span style={{ color: T.w, fontSize: 13, fontWeight: 700, fontFamily: F, flex: 1 }}>{u.name}</span>
-            <span style={{ color: bal >= 0 ? T.green : T.red, fontSize: 14, fontWeight: 800, fontFamily: F }}>{bal >= 0 ? "+" : "-"}{fmt(bal)}</span>
+            <div style={{ textAlign: "right" }}>
+              <span style={{ color: Math.abs(net) < 0.01 ? T.green : net >= 0 ? T.green : T.red, fontSize: 14, fontWeight: 800, fontFamily: F }}>
+                {Math.abs(net) < 0.01 ? "$0.00" : `${net >= 0 ? "+" : "-"}${fmt(net)}`}
+              </span>
+              {hasPayments && <p style={{ color: T.tm, fontSize: 9, fontFamily: F, margin: 0 }}>gastos: {bal >= 0 ? "+" : "-"}{fmt(bal)}</p>}
+            </div>
           </div>;
         })}
       </Card>
