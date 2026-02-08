@@ -446,15 +446,29 @@ const ExpForm = ({ me, onSave, editExp, onCancel }) => {
 // HOME DASHBOARD — month view with balances, recent expenses
 // ============================================================================
 
-const Home = ({ exps, me, month, setMonth, onEdit, onDelete, toast }) => {
+const Home = ({ exps, me, month, setMonth, onEdit, onDelete, settlements, onGoSettle, toast }) => {
   const filtered = exps.filter((e) => e.month === month);
   const total = filtered.reduce((s, e) => s + parseFloat(e.amount), 0);
-  const { balances } = calcSettlements(filtered);
+  const { balances, txns } = calcSettlements(filtered);
   const myBal = balances[me.id] || 0;
   const remaining = daysLeft(month);
-  const showReminder = remaining <= 7 && remaining > 0 && month === monthKey();
+  const isCurrentMonth = month === monthKey();
+  const showReminder = remaining <= 7 && remaining > 0 && isCurrentMonth;
   const [expandedExp, setExpandedExp] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+
+  // Calculate what I owe (pending debts not yet confirmed)
+  const monthSettlements = (settlements || []).filter((s) => s.month === month);
+  const myDebts = txns.filter((tx) => tx.from === me.id).map((tx) => {
+    const s = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+    return { ...tx, status: s?.status || "pending" };
+  }).filter((tx) => tx.status !== "confirmed");
+
+  // Pending confirmations I need to give (someone paid me)
+  const myPendingConfirms = txns.filter((tx) => tx.to === me.id).map((tx) => {
+    const s = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+    return { ...tx, status: s?.status || "pending" };
+  }).filter((tx) => tx.status === "paid");
 
   return (
     <div>
@@ -464,11 +478,37 @@ const Home = ({ exps, me, month, setMonth, onEdit, onDelete, toast }) => {
         <button onClick={() => setMonth(nextMonth(month))} style={{ background: "none", border: "none", color: T.tm, fontSize: 20, cursor: "pointer" }}>›</button>
       </div>
 
+      {/* Smart reminder: last 7 days with specific debt info */}
       {showReminder && (
         <div style={{ background: `linear-gradient(135deg, ${T.yellow}20, ${T.accent}20)`, border: `1px solid ${T.yellow}40`, borderRadius: 12, padding: "12px 16px", marginBottom: 12 }}>
           <p style={{ color: T.yellow, fontSize: 13, fontWeight: 700, fontFamily: F, margin: 0 }}>
-            {remaining <= 3 ? "⏰ Últimos días para liquidar" : `📝 ${remaining} días restantes — registra tus gastos`}
+            {remaining <= 3 ? "⏰ Últimos días del mes" : `📝 ${remaining} días restantes`}
+            {" — registra tus gastos y liquida"}
           </p>
+          {myDebts.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {myDebts.map((d, i) => (
+                <p key={i} style={{ color: d.status === "pending" ? T.red : T.yellow, fontSize: 12, fontFamily: F, margin: "3px 0 0" }}>
+                  {d.status === "pending" ? "💰" : "⏳"} Debés {fmt(d.amount)} a {USER_MAP[d.to]?.emoji} {USER_MAP[d.to]?.name}
+                  {d.status === "paid" && " (esperando confirmación)"}
+                </p>
+              ))}
+            </div>
+          )}
+          {myPendingConfirms.length > 0 && (
+            <div style={{ marginTop: myDebts.length > 0 ? 4 : 8 }}>
+              {myPendingConfirms.map((d, i) => (
+                <p key={i} style={{ color: T.blue, fontSize: 12, fontFamily: F, margin: "3px 0 0" }}>
+                  📩 {USER_MAP[d.from]?.emoji} {USER_MAP[d.from]?.name} te pagó {fmt(d.amount)} — confirma recibido
+                </p>
+              ))}
+            </div>
+          )}
+          {(myDebts.length > 0 || myPendingConfirms.length > 0) && (
+            <button onClick={onGoSettle} style={{ background: T.accent + "30", border: `1px solid ${T.accent}60`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", color: T.accent2, fontSize: 12, fontWeight: 700, fontFamily: F, marginTop: 10, width: "100%" }}>
+              💸 Ir a liquidar
+            </button>
+          )}
         </div>
       )}
 
@@ -1238,7 +1278,7 @@ const BankView = ({ bank, me, refresh, toast }) => {
 // NAVIGATION
 // ============================================================================
 
-const Nav = ({ view, set }) => {
+const Nav = ({ view, set, pendingSettleCount }) => {
   const tabs = [
     { id: "home", icon: "🏠", label: "Inicio" },
     { id: "add", icon: "➕", label: "Nuevo" },
@@ -1252,8 +1292,10 @@ const Nav = ({ view, set }) => {
     <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: T.c, borderTop: `1px solid ${T.b}`, display: "flex", justifyContent: "space-around", padding: "6px 0 env(safe-area-inset-bottom, 8px)", zIndex: 900 }}>
       {tabs.map((t) => {
         const active = view === t.id;
-        return <button key={t.id} onClick={() => set(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "4px 6px", opacity: active ? 1 : 0.5 }}>
+        const showBadge = t.id === "settle" && pendingSettleCount > 0;
+        return <button key={t.id} onClick={() => set(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "4px 6px", opacity: active ? 1 : 0.5, position: "relative" }}>
           <span style={{ fontSize: t.id === "add" ? 24 : 18, filter: active ? "none" : "grayscale(0.5)" }}>{t.icon}</span>
+          {showBadge && <span style={{ position: "absolute", top: 0, right: 0, background: T.red, color: "#fff", fontSize: 8, fontWeight: 900, fontFamily: F, borderRadius: "50%", width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>{pendingSettleCount}</span>}
           <span style={{ color: active ? T.accent2 : T.tm, fontSize: 9, fontWeight: active ? 800 : 600, fontFamily: F }}>{t.label}</span>
         </button>;
       })}
@@ -1390,7 +1432,7 @@ export default function App() {
           <p style={{ color: T.tm, fontFamily: F }}>Cargando...</p>
         </div>
       ) : <>
-        {view === "home" && <Home exps={allExps} me={me} month={month} setMonth={setMonth} onEdit={handleEditExp} onDelete={handleDeleteExp} toast={showToast} />}
+        {view === "home" && <Home exps={allExps} me={me} month={month} setMonth={setMonth} onEdit={handleEditExp} onDelete={handleDeleteExp} settlements={settlements} onGoSettle={() => setView("settle")} toast={showToast} />}
         {view === "add" && <ExpForm me={me} onSave={handleSaveExp} editExp={editingExp} onCancel={editingExp ? () => { setEditingExp(null); setView("home"); } : undefined} />}
         {view === "recurring" && <RecurringView recs={recs} me={me} refresh={loadData} toast={showToast} />}
         {view === "settle" && <SettleView allExps={allExps} bank={bank} month={month} setMonth={setMonth} settlements={settlements} me={me} refresh={loadData} toast={showToast} />}
@@ -1399,7 +1441,17 @@ export default function App() {
         {view === "bank" && <BankView bank={bank} me={me} refresh={loadData} toast={showToast} />}
       </>}
 
-      <Nav view={view} set={(v) => { if (v !== "add") setEditingExp(null); setView(v); }} />
+      <Nav view={view} set={(v) => { if (v !== "add") setEditingExp(null); setView(v); }} pendingSettleCount={(() => {
+        const mk = monthKey();
+        const curExps = allExps.filter((e) => e.month === mk);
+        const { txns } = calcSettlements(curExps);
+        const curSettlements = settlements.filter((s) => s.month === mk);
+        return txns.filter((tx) => {
+          if (tx.from !== me.id && tx.to !== me.id) return false;
+          const s = curSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+          return !s || s.status !== "confirmed";
+        }).length;
+      })()} />
     </div>
   );
 }
