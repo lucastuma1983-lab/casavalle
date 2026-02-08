@@ -495,6 +495,7 @@ const Home = ({ exps, me, month, setMonth, onEdit, onDelete, settlements, onGoSe
   const showReminder = remaining <= 7 && remaining > 0 && isCurrentMonth;
   const [expandedExp, setExpandedExp] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [photoModal, setPhotoModal] = useState(null);
 
   // Calculate what I owe (pending debts not yet confirmed)
   const monthSettlements = (settlements || []).filter((s) => s.month === month);
@@ -603,14 +604,23 @@ const Home = ({ exps, me, month, setMonth, onEdit, onDelete, settlements, onGoSe
                 </div>
                 <span style={{ color: T.w, fontSize: 15, fontWeight: 800, fontFamily: F }}>{fmt(e.amount)}</span>
               </div>
-              {isExpanded && canEdit && (
-                <div style={{ display: "flex", gap: 8, padding: "8px 0 4px", animation: "fadeIn 0.2s ease" }}>
-                  <Btn small onClick={() => onEdit(e)} color={T.c2}>✏️ Editar</Btn>
-                  <Btn small onClick={() => setConfirmDelete(e)} color={T.red + "30"} style={{ color: T.red }}>🗑 Eliminar</Btn>
+              {isExpanded && (
+                <div style={{ animation: "fadeIn 0.2s ease" }}>
+                  {e.note && <p style={{ color: T.ts, fontSize: 12, fontFamily: F, padding: "6px 0 2px", margin: 0 }}>💬 {e.note}</p>}
+                  {e.photo && (
+                    <button onClick={() => setPhotoModal(e.photo)} style={{ background: T.blue + "20", border: `1px solid ${T.blue}40`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: T.blue, fontSize: 11, fontFamily: F, marginTop: 6 }}>
+                      📷 Ver comprobante
+                    </button>
+                  )}
+                  {canEdit ? (
+                    <div style={{ display: "flex", gap: 8, padding: "8px 0 4px" }}>
+                      <Btn small onClick={() => onEdit(e)} color={T.c2}>✏️ Editar</Btn>
+                      <Btn small onClick={() => setConfirmDelete(e)} color={T.red + "30"} style={{ color: T.red }}>🗑 Eliminar</Btn>
+                    </div>
+                  ) : (
+                    <p style={{ color: T.tm, fontSize: 11, fontFamily: F, padding: "6px 0" }}>Solo {user?.name} puede editar este gasto</p>
+                  )}
                 </div>
-              )}
-              {isExpanded && !canEdit && (
-                <p style={{ color: T.tm, fontSize: 11, fontFamily: F, padding: "6px 0" }}>Solo {user?.name} puede editar este gasto</p>
               )}
             </div>;
           })}
@@ -632,6 +642,10 @@ const Home = ({ exps, me, month, setMonth, onEdit, onDelete, settlements, onGoSe
             <Btn onClick={() => { onDelete(confirmDelete); setConfirmDelete(null); }} color={T.red} style={{ flex: 1 }}>Eliminar</Btn>
           </div>
         </>}
+      </Modal>
+
+      <Modal open={!!photoModal} onClose={() => setPhotoModal(null)} title="📷 Comprobante">
+        {photoModal && <img src={photoModal} alt="Comprobante" style={{ width: "100%", borderRadius: 12, maxHeight: "60vh", objectFit: "contain" }} />}
       </Modal>
     </div>
   );
@@ -669,45 +683,58 @@ const RecurringView = ({ recs, me, refresh, toast }) => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
     setSaving(true);
-    if (editingRec) {
-      await supabase.from("recurring").update({
-        amount: amt, category, description: desc.trim(),
-        split_among: splitAmong, updated_at: new Date().toISOString(),
-      }).eq("id", editingRec.id);
-      toast?.("Recurrente actualizado ✓", "success");
-    } else {
-      await supabase.from("recurring").insert({
-        id: uid(), amount: amt, category, description: desc.trim(),
-        paid_by: me.id, split_among: splitAmong, split_type: "equal",
-        active: true, paused_months: [],
-      });
-      toast?.("Recurrente creado ✓", "success");
-    }
+    try {
+      if (editingRec) {
+        const { error } = await supabase.from("recurring").update({
+          amount: amt, category, description: desc.trim(),
+          split_among: splitAmong, updated_at: new Date().toISOString(),
+        }).eq("id", editingRec.id);
+        if (error) throw error;
+        toast?.("Recurrente actualizado ✓", "success");
+      } else {
+        const { error } = await supabase.from("recurring").insert({
+          id: uid(), amount: amt, category, description: desc.trim(),
+          paid_by: me.id, split_among: splitAmong, split_type: "equal",
+          active: true, paused_months: [],
+        });
+        if (error) throw error;
+        toast?.("Recurrente creado ✓", "success");
+      }
+      resetForm();
+      refresh();
+    } catch (err) { console.error("Recurring save error:", err); toast?.("Error al guardar recurrente", "error"); }
     setSaving(false);
-    resetForm();
-    refresh();
   };
 
   const toggleActive = async (id, current) => {
-    await supabase.from("recurring").update({ active: !current }).eq("id", id);
-    toast?.(!current ? "Recurrente activado" : "Recurrente desactivado", "success");
-    refresh();
+    try {
+      const { error } = await supabase.from("recurring").update({ active: !current }).eq("id", id);
+      if (error) throw error;
+      toast?.(!current ? "Recurrente activado" : "Recurrente desactivado", "success");
+      refresh();
+    } catch (err) { console.error(err); toast?.("Error de conexión", "error"); }
   };
 
   const togglePauseMonth = async (rec) => {
-    const mk = monthKey();
-    const paused = rec.paused_months || [];
-    const newPaused = paused.includes(mk) ? paused.filter((m) => m !== mk) : [...paused, mk];
-    await supabase.from("recurring").update({ paused_months: newPaused }).eq("id", rec.id);
-    toast?.(newPaused.includes(mk) ? `Pausado para ${monthLabel(mk)}` : `Reactivado para ${monthLabel(mk)}`, "success");
-    refresh();
+    try {
+      const mk = monthKey();
+      const paused = rec.paused_months || [];
+      const newPaused = paused.includes(mk) ? paused.filter((m) => m !== mk) : [...paused, mk];
+      const { error } = await supabase.from("recurring").update({ paused_months: newPaused }).eq("id", rec.id);
+      if (error) throw error;
+      toast?.(newPaused.includes(mk) ? `Pausado para ${monthLabel(mk)}` : `Reactivado para ${monthLabel(mk)}`, "success");
+      refresh();
+    } catch (err) { console.error(err); toast?.("Error de conexión", "error"); }
   };
 
   const deleteRec = async (id) => {
-    await supabase.from("recurring").delete().eq("id", id);
-    toast?.("Recurrente eliminado", "success");
-    setConfirmDelete(null);
-    refresh();
+    try {
+      const { error } = await supabase.from("recurring").delete().eq("id", id);
+      if (error) throw error;
+      toast?.("Recurrente eliminado", "success");
+      setConfirmDelete(null);
+      refresh();
+    } catch (err) { console.error(err); toast?.("Error al eliminar", "error"); }
   };
 
   return (
@@ -831,20 +858,27 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
   });
 
   const handleMarkPaid = async (tx) => {
-    const existing = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
-    if (existing) {
-      await supabase.from("settlements").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", existing.id);
-    } else {
-      await supabase.from("settlements").insert({ id: uid(), from_user: tx.from, to_user: tx.to, amount: tx.amount, settle_month: month, status: "paid", paid_at: new Date().toISOString() });
-    }
-    toast?.("Marcado como pagado ✓", "success");
-    refresh();
+    try {
+      const existing = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+      if (existing) {
+        const { error } = await supabase.from("settlements").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", existing.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("settlements").insert({ id: uid(), from_user: tx.from, to_user: tx.to, amount: tx.amount, settle_month: month, status: "paid", paid_at: new Date().toISOString() });
+        if (error) throw error;
+      }
+      toast?.("Marcado como pagado ✓", "success");
+      refresh();
+    } catch (err) { console.error(err); toast?.("Error al marcar pago", "error"); }
   };
 
   const handleConfirm = async (settlementId) => {
-    await supabase.from("settlements").update({ status: "confirmed", confirmed_at: new Date().toISOString() }).eq("id", settlementId);
-    toast?.("Pago confirmado ✓", "success");
-    refresh();
+    try {
+      const { error } = await supabase.from("settlements").update({ status: "confirmed", confirmed_at: new Date().toISOString() }).eq("id", settlementId);
+      if (error) throw error;
+      toast?.("Pago confirmado ✓", "success");
+      refresh();
+    } catch (err) { console.error(err); toast?.("Error al confirmar", "error"); }
   };
 
   const handleProof = async (e, tx) => {
@@ -852,15 +886,19 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const existing = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
-      if (existing) {
-        await supabase.from("settlements").update({ proof_photo: ev.target.result, status: "paid", paid_at: new Date().toISOString() }).eq("id", existing.id);
-      } else {
-        await supabase.from("settlements").insert({ id: uid(), from_user: tx.from, to_user: tx.to, amount: tx.amount, settle_month: month, status: "paid", paid_at: new Date().toISOString(), proof_photo: ev.target.result });
-      }
-      toast?.("Comprobante subido ✓", "success");
-      setUploadingFor(null);
-      refresh();
+      try {
+        const existing = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+        if (existing) {
+          const { error } = await supabase.from("settlements").update({ proof_photo: ev.target.result, status: "paid", paid_at: new Date().toISOString() }).eq("id", existing.id);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase.from("settlements").insert({ id: uid(), from_user: tx.from, to_user: tx.to, amount: tx.amount, settle_month: month, status: "paid", paid_at: new Date().toISOString(), proof_photo: ev.target.result });
+          if (error) throw error;
+        }
+        toast?.("Comprobante subido ✓", "success");
+        setUploadingFor(null);
+        refresh();
+      } catch (err) { console.error(err); toast?.("Error al subir comprobante", "error"); }
     };
     reader.readAsDataURL(file);
   };
@@ -1259,21 +1297,28 @@ const BankView = ({ bank, me, refresh, toast }) => {
     const clean = clabe.replace(/\s/g, "");
     if (!/^\d{18}$/.test(clean)) { toast?.("CLABE debe tener 18 dígitos", "error"); return; }
     if (!bankName.trim()) { toast?.("Banco es obligatorio", "error"); return; }
-    const existing = bank.find((b) => b.user_id === editing);
-    if (existing) {
-      await supabase.from("bank_accounts").update({ clabe: clean, bank_name: bankName.trim() }).eq("user_id", editing);
-    } else {
-      await supabase.from("bank_accounts").insert({ user_id: editing, clabe: clean, bank_name: bankName.trim() });
-    }
-    toast?.("Datos bancarios guardados ✓", "success");
-    setEditing(null); setClabe(""); setBankName("");
-    refresh();
+    try {
+      const existing = bank.find((b) => b.user_id === editing);
+      if (existing) {
+        const { error } = await supabase.from("bank_accounts").update({ clabe: clean, bank_name: bankName.trim() }).eq("user_id", editing);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("bank_accounts").insert({ user_id: editing, clabe: clean, bank_name: bankName.trim() });
+        if (error) throw error;
+      }
+      toast?.("Datos bancarios guardados ✓", "success");
+      setEditing(null); setClabe(""); setBankName("");
+      refresh();
+    } catch (err) { console.error(err); toast?.("Error al guardar datos bancarios", "error"); }
   };
 
   const handleDelete = async (userId) => {
-    await supabase.from("bank_accounts").delete().eq("user_id", userId);
-    toast?.("CLABE eliminada", "success");
-    refresh();
+    try {
+      const { error } = await supabase.from("bank_accounts").delete().eq("user_id", userId);
+      if (error) throw error;
+      toast?.("CLABE eliminada", "success");
+      refresh();
+    } catch (err) { console.error(err); toast?.("Error al eliminar CLABE", "error"); }
   };
 
   return (
@@ -1360,7 +1405,9 @@ const Header = ({ me, onLogout }) => (
 // ============================================================================
 
 export default function App() {
-  const [me, setMe] = useState(null);
+  const [me, setMe] = useState(() => {
+    try { const s = localStorage.getItem("casavalle_session"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const [view, setView] = useState("home");
   const [month, setMonth] = useState(monthKey());
   const [allExps, setAllExps] = useState([]);
@@ -1373,6 +1420,16 @@ export default function App() {
   const [editingExp, setEditingExp] = useState(null);
 
   const showToast = useCallback((msg, type = "success") => setToast({ message: msg, type }), []);
+
+  const handleLogin = useCallback((user) => {
+    setMe(user);
+    try { localStorage.setItem("casavalle_session", JSON.stringify(user)); } catch {}
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    setMe(null);
+    try { localStorage.removeItem("casavalle_session"); } catch {}
+  }, []);
 
   const loadData = useCallback(async () => {
     if (!me) return;
@@ -1392,9 +1449,9 @@ export default function App() {
       const bg = {}; (budgetRes.data || []).forEach((b) => { bg[b.category] = b.monthly_limit; });
       setBudgets(bg);
       setSettlements((settleRes.data || []).map(s => ({ ...s, month: s.settle_month })));
-    } catch (err) { console.error("Load error:", err); }
+    } catch (err) { console.error("Load error:", err); showToast("Error al cargar datos. Verifica tu conexión.", "error"); }
     setLoading(false);
-  }, [me]);
+  }, [me, showToast]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -1425,45 +1482,58 @@ export default function App() {
   }, [me, recs, allExps]);
 
   const handleSaveExp = async (exp) => {
-    const dbExp = { ...exp, expense_month: exp.month };
-    delete dbExp.month;
-    const { data: existing } = await supabase.from("expenses").select("id").eq("id", exp.id).single();
-    if (existing) {
-      await supabase.from("expenses").update(dbExp).eq("id", exp.id);
-    } else {
-      await supabase.from("expenses").insert(dbExp);
+    try {
+      const dbExp = { ...exp, expense_month: exp.month };
+      delete dbExp.month;
+      const { data: existing } = await supabase.from("expenses").select("id").eq("id", exp.id).single();
+      if (existing) {
+        const { error } = await supabase.from("expenses").update(dbExp).eq("id", exp.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("expenses").insert(dbExp);
+        if (error) throw error;
+      }
+      // Budget alert
+      const catBudget = budgets[exp.category];
+      if (catBudget > 0) {
+        const catTotal = allExps.filter((e) => e.category === exp.category && e.month === exp.month).reduce((s, e) => s + parseFloat(e.amount), 0) + exp.amount;
+        const pct = (catTotal / catBudget) * 100;
+        if (pct >= 100) showToast(`🚨 ${CAT_MAP[exp.category]?.label}: excedido (${fmt(catTotal)} / ${fmt(catBudget)})`, "error");
+        else if (pct >= 80) showToast(`⚠️ ${CAT_MAP[exp.category]?.label}: ${pct.toFixed(0)}% usado`, "warning");
+        else showToast(existing ? "Actualizado ✓" : "Guardado ✓", "success");
+      } else {
+        showToast(existing ? "Actualizado ✓" : "Guardado ✓", "success");
+      }
+      setEditingExp(null);
+      setView("home");
+      loadData();
+    } catch (err) {
+      console.error("Save error:", err);
+      showToast("Error al guardar. Verifica tu conexión.", "error");
     }
-    // Budget alert
-    const catBudget = budgets[exp.category];
-    if (catBudget > 0) {
-      const catTotal = allExps.filter((e) => e.category === exp.category && e.month === exp.month).reduce((s, e) => s + parseFloat(e.amount), 0) + exp.amount;
-      const pct = (catTotal / catBudget) * 100;
-      if (pct >= 100) showToast(`🚨 ${CAT_MAP[exp.category]?.label}: excedido (${fmt(catTotal)} / ${fmt(catBudget)})`, "error");
-      else if (pct >= 80) showToast(`⚠️ ${CAT_MAP[exp.category]?.label}: ${pct.toFixed(0)}% usado`, "warning");
-      else showToast(existing ? "Actualizado ✓" : "Guardado ✓", "success");
-    } else {
-      showToast(existing ? "Actualizado ✓" : "Guardado ✓", "success");
-    }
-    setEditingExp(null);
-    setView("home");
-    loadData();
   };
 
   const handleDeleteExp = async (exp) => {
-    await supabase.from("expenses").delete().eq("id", exp.id);
-    showToast("Eliminado", "success");
-    loadData();
+    try {
+      const { error } = await supabase.from("expenses").delete().eq("id", exp.id);
+      if (error) throw error;
+      showToast("Eliminado", "success");
+      loadData();
+    } catch (err) {
+      console.error("Delete error:", err);
+      showToast("Error al eliminar. Verifica tu conexión.", "error");
+    }
   };
 
   const handleEditExp = (exp) => { setEditingExp(exp); setView("add"); };
 
-  if (!me) return <><style>{CSS}</style><Login onLogin={setMe} toast={showToast} /></>;
+  if (!me) return <><style>{CSS}</style><Login onLogin={handleLogin} toast={showToast} /></>;
 
   return (
     <div style={{ background: T.bg, minHeight: "100vh", maxWidth: 480, margin: "0 auto", padding: "0 16px 80px" }}>
       <style>{CSS}</style>
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-      <Header me={me} onLogout={() => setMe(null)} />
+      <Header me={me} onLogout={handleLogout} />
 
       {loading ? (
         <div style={{ padding: 40, textAlign: "center" }}>
