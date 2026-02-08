@@ -115,7 +115,7 @@ const PinInput = ({ onComplete }) => {
 
 const Login = ({ onLogin, toast }) => {
   const [selectedUser, setSelectedUser] = useState(null);
-  const [mode, setMode] = useState("select"); // select | pin | create | recovery
+  const [mode, setMode] = useState("select"); // select | register_email | create | pin | recovery
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [pinAttempt, setPinAttempt] = useState(0);
@@ -127,7 +127,7 @@ const Login = ({ onLogin, toast }) => {
     setSelectedUser(user); setError(""); setLoading(true);
     const { data } = await supabase.from("users").select("pin_hash, email, failed_attempts, locked_until").eq("id", user.id).single();
     setLoading(false);
-    if (!data) { setMode("create"); return; }
+    if (!data) { setMode("register_email"); return; }
 
     // Check lockout
     if (data.locked_until && new Date(data.locked_until) > new Date()) {
@@ -139,7 +139,25 @@ const Login = ({ onLogin, toast }) => {
     }
 
     setAttemptsLeft(MAX_PIN_ATTEMPTS - (data.failed_attempts || 0));
-    setMode(data.pin_hash ? "pin" : "create");
+    if (!data.pin_hash) {
+      // Has no PIN yet — if also no email, ask for email first
+      setMode(data.email ? "create" : "register_email");
+    } else {
+      setMode("pin");
+    }
+  };
+
+  const handleRegisterEmail = async () => {
+    const trimmed = email.trim();
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setError("Ingresa un email válido");
+      return;
+    }
+    setLoading(true); setError("");
+    await supabase.from("users").update({ email: trimmed }).eq("id", selectedUser.id);
+    setLoading(false);
+    toast?.("Email guardado. Ahora crea tu PIN.", "success");
+    setMode("create");
   };
 
   const handlePin = async (pin) => {
@@ -156,12 +174,10 @@ const Login = ({ onLogin, toast }) => {
 
     const { data } = await supabase.from("users").select("pin_hash, failed_attempts").eq("id", selectedUser.id).single();
     if (data?.pin_hash === hashPin(pin)) {
-      // Success — reset attempts
       await supabase.from("users").update({ failed_attempts: 0, locked_until: null }).eq("id", selectedUser.id);
       setLoading(false);
       onLogin(selectedUser);
     } else {
-      // Wrong PIN
       const newAttempts = (data?.failed_attempts || 0) + 1;
       const remaining = MAX_PIN_ATTEMPTS - newAttempts;
       const updates = { failed_attempts: newAttempts };
@@ -181,15 +197,19 @@ const Login = ({ onLogin, toast }) => {
 
   const handleRecovery = async () => {
     if (!email.trim() || !selectedUser) return;
-    setLoading(true);
-    // Validate email matches stored email (if one exists)
+    setLoading(true); setError("");
     const { data: userData } = await supabase.from("users").select("email").eq("id", selectedUser.id).single();
-    if (userData?.email && userData.email.toLowerCase() !== email.trim().toLowerCase()) {
+    if (!userData?.email) {
+      setLoading(false);
+      setError("No hay email registrado. Contacta a los demás para resetear.");
+      return;
+    }
+    if (userData.email.toLowerCase() !== email.trim().toLowerCase()) {
       setLoading(false);
       setError("El email no coincide con el registrado.");
       return;
     }
-    await supabase.from("users").update({ email: email.trim(), pin_hash: null, failed_attempts: 0, locked_until: null }).eq("id", selectedUser.id);
+    await supabase.from("users").update({ pin_hash: null, failed_attempts: 0, locked_until: null }).eq("id", selectedUser.id);
     setLoading(false);
     toast?.("PIN reseteado. Crea uno nuevo.", "success");
     setMode("create");
@@ -199,6 +219,8 @@ const Login = ({ onLogin, toast }) => {
   };
 
   const isLocked = lockedUntil && new Date(lockedUntil) > new Date();
+
+  const goBack = () => { setSelectedUser(null); setMode("select"); setError(""); setLockedUntil(null); setEmail(""); };
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, background: `linear-gradient(180deg, ${T.bg} 0%, #0A1A10 50%, ${T.c} 100%)` }}>
@@ -221,29 +243,46 @@ const Login = ({ onLogin, toast }) => {
             ))}
           </div>
         </div>
+
+      ) : mode === "register_email" ? (
+        <div style={{ width: "100%", maxWidth: 360, animation: "fadeIn 0.3s ease" }}>
+          <div style={{ textAlign: "center", marginBottom: 24 }}>
+            <span style={{ fontSize: 40 }}>{selectedUser.emoji}</span>
+            <h2 style={{ color: T.w, fontSize: 20, fontWeight: 800, fontFamily: F, margin: "8px 0 4px" }}>Hola {selectedUser.name}!</h2>
+            <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>Registra tu email para poder recuperar tu PIN si lo olvidás</p>
+          </div>
+          <Input label="EMAIL" type="email" value={email} onChange={setEmail} placeholder="tu@email.com" />
+          {error && <p style={{ color: T.red, fontSize: 13, fontFamily: F, textAlign: "center", marginBottom: 12 }}>{error}</p>}
+          <Btn onClick={handleRegisterEmail} disabled={!email.trim() || loading} style={{ width: "100%", marginBottom: 12 }}>
+            {loading ? "Guardando..." : "Continuar"}
+          </Btn>
+          <button onClick={goBack} style={{ background: "none", border: "none", color: T.tm, fontSize: 13, fontFamily: F, cursor: "pointer", display: "block", margin: "0 auto", padding: 8 }}>← Cambiar usuario</button>
+        </div>
+
       ) : mode === "recovery" ? (
         <div style={{ width: "100%", maxWidth: 360, animation: "fadeIn 0.3s ease" }}>
           <div style={{ textAlign: "center", marginBottom: 24 }}>
             <span style={{ fontSize: 40 }}>{selectedUser.emoji}</span>
             <h2 style={{ color: T.w, fontSize: 20, fontWeight: 800, fontFamily: F, margin: "8px 0 4px" }}>Recuperar acceso</h2>
-            <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>Ingresa tu email para resetear el PIN</p>
+            <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>Ingresa el email que registraste para resetear el PIN</p>
           </div>
           <Input label="EMAIL" type="email" value={email} onChange={setEmail} placeholder="tu@email.com" />
           {error && <p style={{ color: T.red, fontSize: 13, fontFamily: F, textAlign: "center", marginBottom: 12 }}>{error}</p>}
           <Btn onClick={handleRecovery} disabled={!email.trim() || loading} style={{ width: "100%", marginBottom: 12 }}>
             {loading ? "Procesando..." : "Resetear PIN"}
           </Btn>
-          <button onClick={() => { setMode("pin"); setError(""); }} style={{ background: "none", border: "none", color: T.tm, fontSize: 13, fontFamily: F, cursor: "pointer", display: "block", margin: "0 auto", padding: 8 }}>← Volver</button>
+          <button onClick={() => { setMode("pin"); setError(""); setEmail(""); }} style={{ background: "none", border: "none", color: T.tm, fontSize: 13, fontFamily: F, cursor: "pointer", display: "block", margin: "0 auto", padding: 8 }}>← Volver</button>
         </div>
+
       ) : (
         <div style={{ width: "100%", maxWidth: 360, animation: "fadeIn 0.3s ease" }}>
           <div style={{ textAlign: "center", marginBottom: 24 }}>
             <span style={{ fontSize: 40 }}>{selectedUser.emoji}</span>
             <h2 style={{ color: T.w, fontSize: 20, fontWeight: 800, fontFamily: F, margin: "8px 0 4px" }}>
-              {mode === "create" ? `Hola ${selectedUser.name}!` : selectedUser.name}
+              {mode === "create" ? `${selectedUser.name}, crea tu PIN` : selectedUser.name}
             </h2>
             <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>
-              {mode === "create" ? "Crea tu PIN de 4 dígitos" : "Ingresa tu PIN"}
+              {mode === "create" ? "Elige 4 dígitos que puedas recordar" : "Ingresa tu PIN"}
             </p>
           </div>
           {loading ? (
@@ -253,10 +292,10 @@ const Login = ({ onLogin, toast }) => {
           )}
           {error && <p style={{ color: T.red, fontSize: 13, fontFamily: F, textAlign: "center", marginTop: 12 }}>{error}</p>}
           <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 20 }}>
-            <button onClick={() => { setSelectedUser(null); setMode("select"); setError(""); setLockedUntil(null); }}
+            <button onClick={goBack}
               style={{ background: "none", border: "none", color: T.tm, fontSize: 13, fontFamily: F, cursor: "pointer", padding: 8 }}>← Cambiar usuario</button>
-            {(isLocked || (mode === "pin" && attemptsLeft <= 2)) && (
-              <button onClick={() => setMode("recovery")}
+            {mode === "pin" && (isLocked || attemptsLeft <= 2) && (
+              <button onClick={() => { setMode("recovery"); setError(""); setEmail(""); }}
                 style={{ background: "none", border: "none", color: T.accent2, fontSize: 13, fontFamily: F, cursor: "pointer", padding: 8 }}>Olvidé mi PIN</button>
             )}
           </div>
@@ -446,15 +485,29 @@ const ExpForm = ({ me, onSave, editExp, onCancel }) => {
 // HOME DASHBOARD — month view with balances, recent expenses
 // ============================================================================
 
-const Home = ({ exps, me, month, setMonth, onEdit, onDelete, toast }) => {
+const Home = ({ exps, me, month, setMonth, onEdit, onDelete, settlements, onGoSettle, toast }) => {
   const filtered = exps.filter((e) => e.month === month);
   const total = filtered.reduce((s, e) => s + parseFloat(e.amount), 0);
-  const { balances } = calcSettlements(filtered);
+  const { balances, txns } = calcSettlements(filtered);
   const myBal = balances[me.id] || 0;
   const remaining = daysLeft(month);
-  const showReminder = remaining <= 7 && remaining > 0 && month === monthKey();
+  const isCurrentMonth = month === monthKey();
+  const showReminder = remaining <= 7 && remaining > 0 && isCurrentMonth;
   const [expandedExp, setExpandedExp] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+
+  // Calculate what I owe (pending debts not yet confirmed)
+  const monthSettlements = (settlements || []).filter((s) => s.month === month);
+  const myDebts = txns.filter((tx) => tx.from === me.id).map((tx) => {
+    const s = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+    return { ...tx, status: s?.status || "pending" };
+  }).filter((tx) => tx.status !== "confirmed");
+
+  // Pending confirmations I need to give (someone paid me)
+  const myPendingConfirms = txns.filter((tx) => tx.to === me.id).map((tx) => {
+    const s = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+    return { ...tx, status: s?.status || "pending" };
+  }).filter((tx) => tx.status === "paid");
 
   return (
     <div>
@@ -464,11 +517,37 @@ const Home = ({ exps, me, month, setMonth, onEdit, onDelete, toast }) => {
         <button onClick={() => setMonth(nextMonth(month))} style={{ background: "none", border: "none", color: T.tm, fontSize: 20, cursor: "pointer" }}>›</button>
       </div>
 
+      {/* Smart reminder: last 7 days with specific debt info */}
       {showReminder && (
         <div style={{ background: `linear-gradient(135deg, ${T.yellow}20, ${T.accent}20)`, border: `1px solid ${T.yellow}40`, borderRadius: 12, padding: "12px 16px", marginBottom: 12 }}>
           <p style={{ color: T.yellow, fontSize: 13, fontWeight: 700, fontFamily: F, margin: 0 }}>
-            {remaining <= 3 ? "⏰ Últimos días para liquidar" : `📝 ${remaining} días restantes — registra tus gastos`}
+            {remaining <= 3 ? "⏰ Últimos días del mes" : `📝 ${remaining} días restantes`}
+            {" — registra tus gastos y liquida"}
           </p>
+          {myDebts.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {myDebts.map((d, i) => (
+                <p key={i} style={{ color: d.status === "pending" ? T.red : T.yellow, fontSize: 12, fontFamily: F, margin: "3px 0 0" }}>
+                  {d.status === "pending" ? "💰" : "⏳"} Debés {fmt(d.amount)} a {USER_MAP[d.to]?.emoji} {USER_MAP[d.to]?.name}
+                  {d.status === "paid" && " (esperando confirmación)"}
+                </p>
+              ))}
+            </div>
+          )}
+          {myPendingConfirms.length > 0 && (
+            <div style={{ marginTop: myDebts.length > 0 ? 4 : 8 }}>
+              {myPendingConfirms.map((d, i) => (
+                <p key={i} style={{ color: T.blue, fontSize: 12, fontFamily: F, margin: "3px 0 0" }}>
+                  📩 {USER_MAP[d.from]?.emoji} {USER_MAP[d.from]?.name} te pagó {fmt(d.amount)} — confirma recibido
+                </p>
+              ))}
+            </div>
+          )}
+          {(myDebts.length > 0 || myPendingConfirms.length > 0) && (
+            <button onClick={onGoSettle} style={{ background: T.accent + "30", border: `1px solid ${T.accent}60`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", color: T.accent2, fontSize: 12, fontWeight: 700, fontFamily: F, marginTop: 10, width: "100%" }}>
+              💸 Ir a liquidar
+            </button>
+          )}
         </div>
       )}
 
@@ -734,6 +813,23 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
   const [uploadingFor, setUploadingFor] = useState(null);
   const [proofModal, setProofModal] = useState(null);
 
+  // Net balances: only confirmed payments compensate the balance
+  const netBalances = { ...balances };
+  monthSettlements.forEach((s) => {
+    if (s.status === "confirmed") {
+      const amt = parseFloat(s.amount);
+      // from_user paid their debt → balance goes toward 0
+      netBalances[s.from_user] = (netBalances[s.from_user] || 0) + amt;
+      // to_user received payment → balance goes toward 0
+      netBalances[s.to_user] = (netBalances[s.to_user] || 0) - amt;
+    }
+  });
+
+  const allSettled = txns.length > 0 && txns.every((tx) => {
+    const s = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+    return s?.status === "confirmed";
+  });
+
   const handleMarkPaid = async (tx) => {
     const existing = monthSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
     if (existing) {
@@ -777,14 +873,27 @@ const SettleView = ({ allExps, bank, month, setMonth, settlements, me, refresh, 
         <button onClick={() => setMonth(nextMonth(month))} style={{ background: "none", border: "none", color: T.tm, fontSize: 20, cursor: "pointer" }}>›</button>
       </div>
 
+      {allSettled && (
+        <div style={{ background: `linear-gradient(135deg, ${T.green}20, ${T.green}10)`, border: `1px solid ${T.green}40`, borderRadius: 12, padding: "14px 16px", marginBottom: 12, textAlign: "center" }}>
+          <p style={{ color: T.green, fontSize: 15, fontWeight: 800, fontFamily: F, margin: 0 }}>✅ Mes completamente liquidado</p>
+        </div>
+      )}
+
       <Card style={{ marginBottom: 16 }}>
-        <h4 style={{ color: T.w, fontSize: 14, fontWeight: 800, fontFamily: F, marginBottom: 12 }}>Balances</h4>
+        <h4 style={{ color: T.w, fontSize: 14, fontWeight: 800, fontFamily: F, marginBottom: 12 }}>Balances {allSettled ? "(liquidado)" : "(pendiente)"}</h4>
         {USERS.map((u) => {
           const bal = balances[u.id] || 0;
+          const net = Math.round((netBalances[u.id] || 0) * 100) / 100;
+          const hasPayments = Math.abs(net - bal) > 0.01;
           return <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.b}20` }}>
             <span style={{ fontSize: 20 }}>{u.emoji}</span>
             <span style={{ color: T.w, fontSize: 13, fontWeight: 700, fontFamily: F, flex: 1 }}>{u.name}</span>
-            <span style={{ color: bal >= 0 ? T.green : T.red, fontSize: 14, fontWeight: 800, fontFamily: F }}>{bal >= 0 ? "+" : "-"}{fmt(bal)}</span>
+            <div style={{ textAlign: "right" }}>
+              <span style={{ color: Math.abs(net) < 0.01 ? T.green : net >= 0 ? T.green : T.red, fontSize: 14, fontWeight: 800, fontFamily: F }}>
+                {Math.abs(net) < 0.01 ? "$0.00" : `${net >= 0 ? "+" : "-"}${fmt(net)}`}
+              </span>
+              {hasPayments && <p style={{ color: T.tm, fontSize: 9, fontFamily: F, margin: 0 }}>gastos: {bal >= 0 ? "+" : "-"}{fmt(bal)}</p>}
+            </div>
           </div>;
         })}
       </Card>
@@ -1208,7 +1317,7 @@ const BankView = ({ bank, me, refresh, toast }) => {
 // NAVIGATION
 // ============================================================================
 
-const Nav = ({ view, set }) => {
+const Nav = ({ view, set, pendingSettleCount }) => {
   const tabs = [
     { id: "home", icon: "🏠", label: "Inicio" },
     { id: "add", icon: "➕", label: "Nuevo" },
@@ -1222,8 +1331,10 @@ const Nav = ({ view, set }) => {
     <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: T.c, borderTop: `1px solid ${T.b}`, display: "flex", justifyContent: "space-around", padding: "6px 0 env(safe-area-inset-bottom, 8px)", zIndex: 900 }}>
       {tabs.map((t) => {
         const active = view === t.id;
-        return <button key={t.id} onClick={() => set(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "4px 6px", opacity: active ? 1 : 0.5 }}>
+        const showBadge = t.id === "settle" && pendingSettleCount > 0;
+        return <button key={t.id} onClick={() => set(t.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, padding: "4px 6px", opacity: active ? 1 : 0.5, position: "relative" }}>
           <span style={{ fontSize: t.id === "add" ? 24 : 18, filter: active ? "none" : "grayscale(0.5)" }}>{t.icon}</span>
+          {showBadge && <span style={{ position: "absolute", top: 0, right: 0, background: T.red, color: "#fff", fontSize: 8, fontWeight: 900, fontFamily: F, borderRadius: "50%", width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>{pendingSettleCount}</span>}
           <span style={{ color: active ? T.accent2 : T.tm, fontSize: 9, fontWeight: active ? 800 : 600, fontFamily: F }}>{t.label}</span>
         </button>;
       })}
@@ -1360,7 +1471,7 @@ export default function App() {
           <p style={{ color: T.tm, fontFamily: F }}>Cargando...</p>
         </div>
       ) : <>
-        {view === "home" && <Home exps={allExps} me={me} month={month} setMonth={setMonth} onEdit={handleEditExp} onDelete={handleDeleteExp} toast={showToast} />}
+        {view === "home" && <Home exps={allExps} me={me} month={month} setMonth={setMonth} onEdit={handleEditExp} onDelete={handleDeleteExp} settlements={settlements} onGoSettle={() => setView("settle")} toast={showToast} />}
         {view === "add" && <ExpForm me={me} onSave={handleSaveExp} editExp={editingExp} onCancel={editingExp ? () => { setEditingExp(null); setView("home"); } : undefined} />}
         {view === "recurring" && <RecurringView recs={recs} me={me} refresh={loadData} toast={showToast} />}
         {view === "settle" && <SettleView allExps={allExps} bank={bank} month={month} setMonth={setMonth} settlements={settlements} me={me} refresh={loadData} toast={showToast} />}
@@ -1369,7 +1480,17 @@ export default function App() {
         {view === "bank" && <BankView bank={bank} me={me} refresh={loadData} toast={showToast} />}
       </>}
 
-      <Nav view={view} set={(v) => { if (v !== "add") setEditingExp(null); setView(v); }} />
+      <Nav view={view} set={(v) => { if (v !== "add") setEditingExp(null); setView(v); }} pendingSettleCount={(() => {
+        const mk = monthKey();
+        const curExps = allExps.filter((e) => e.month === mk);
+        const { txns } = calcSettlements(curExps);
+        const curSettlements = settlements.filter((s) => s.month === mk);
+        return txns.filter((tx) => {
+          if (tx.from !== me.id && tx.to !== me.id) return false;
+          const s = curSettlements.find((s) => s.from_user === tx.from && s.to_user === tx.to);
+          return !s || s.status !== "confirmed";
+        }).length;
+      })()} />
     </div>
   );
 }
