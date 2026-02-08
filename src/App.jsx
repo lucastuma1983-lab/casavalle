@@ -115,7 +115,7 @@ const PinInput = ({ onComplete }) => {
 
 const Login = ({ onLogin, toast }) => {
   const [selectedUser, setSelectedUser] = useState(null);
-  const [mode, setMode] = useState("select"); // select | pin | create | recovery
+  const [mode, setMode] = useState("select"); // select | register_email | create | pin | recovery
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [pinAttempt, setPinAttempt] = useState(0);
@@ -127,7 +127,7 @@ const Login = ({ onLogin, toast }) => {
     setSelectedUser(user); setError(""); setLoading(true);
     const { data } = await supabase.from("users").select("pin_hash, email, failed_attempts, locked_until").eq("id", user.id).single();
     setLoading(false);
-    if (!data) { setMode("create"); return; }
+    if (!data) { setMode("register_email"); return; }
 
     // Check lockout
     if (data.locked_until && new Date(data.locked_until) > new Date()) {
@@ -139,7 +139,25 @@ const Login = ({ onLogin, toast }) => {
     }
 
     setAttemptsLeft(MAX_PIN_ATTEMPTS - (data.failed_attempts || 0));
-    setMode(data.pin_hash ? "pin" : "create");
+    if (!data.pin_hash) {
+      // Has no PIN yet — if also no email, ask for email first
+      setMode(data.email ? "create" : "register_email");
+    } else {
+      setMode("pin");
+    }
+  };
+
+  const handleRegisterEmail = async () => {
+    const trimmed = email.trim();
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setError("Ingresa un email válido");
+      return;
+    }
+    setLoading(true); setError("");
+    await supabase.from("users").update({ email: trimmed }).eq("id", selectedUser.id);
+    setLoading(false);
+    toast?.("Email guardado. Ahora crea tu PIN.", "success");
+    setMode("create");
   };
 
   const handlePin = async (pin) => {
@@ -156,12 +174,10 @@ const Login = ({ onLogin, toast }) => {
 
     const { data } = await supabase.from("users").select("pin_hash, failed_attempts").eq("id", selectedUser.id).single();
     if (data?.pin_hash === hashPin(pin)) {
-      // Success — reset attempts
       await supabase.from("users").update({ failed_attempts: 0, locked_until: null }).eq("id", selectedUser.id);
       setLoading(false);
       onLogin(selectedUser);
     } else {
-      // Wrong PIN
       const newAttempts = (data?.failed_attempts || 0) + 1;
       const remaining = MAX_PIN_ATTEMPTS - newAttempts;
       const updates = { failed_attempts: newAttempts };
@@ -181,15 +197,19 @@ const Login = ({ onLogin, toast }) => {
 
   const handleRecovery = async () => {
     if (!email.trim() || !selectedUser) return;
-    setLoading(true);
-    // Validate email matches stored email (if one exists)
+    setLoading(true); setError("");
     const { data: userData } = await supabase.from("users").select("email").eq("id", selectedUser.id).single();
-    if (userData?.email && userData.email.toLowerCase() !== email.trim().toLowerCase()) {
+    if (!userData?.email) {
+      setLoading(false);
+      setError("No hay email registrado. Contacta a los demás para resetear.");
+      return;
+    }
+    if (userData.email.toLowerCase() !== email.trim().toLowerCase()) {
       setLoading(false);
       setError("El email no coincide con el registrado.");
       return;
     }
-    await supabase.from("users").update({ email: email.trim(), pin_hash: null, failed_attempts: 0, locked_until: null }).eq("id", selectedUser.id);
+    await supabase.from("users").update({ pin_hash: null, failed_attempts: 0, locked_until: null }).eq("id", selectedUser.id);
     setLoading(false);
     toast?.("PIN reseteado. Crea uno nuevo.", "success");
     setMode("create");
@@ -199,6 +219,8 @@ const Login = ({ onLogin, toast }) => {
   };
 
   const isLocked = lockedUntil && new Date(lockedUntil) > new Date();
+
+  const goBack = () => { setSelectedUser(null); setMode("select"); setError(""); setLockedUntil(null); setEmail(""); };
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, background: `linear-gradient(180deg, ${T.bg} 0%, #0A1A10 50%, ${T.c} 100%)` }}>
@@ -221,29 +243,46 @@ const Login = ({ onLogin, toast }) => {
             ))}
           </div>
         </div>
+
+      ) : mode === "register_email" ? (
+        <div style={{ width: "100%", maxWidth: 360, animation: "fadeIn 0.3s ease" }}>
+          <div style={{ textAlign: "center", marginBottom: 24 }}>
+            <span style={{ fontSize: 40 }}>{selectedUser.emoji}</span>
+            <h2 style={{ color: T.w, fontSize: 20, fontWeight: 800, fontFamily: F, margin: "8px 0 4px" }}>Hola {selectedUser.name}!</h2>
+            <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>Registra tu email para poder recuperar tu PIN si lo olvidás</p>
+          </div>
+          <Input label="EMAIL" type="email" value={email} onChange={setEmail} placeholder="tu@email.com" />
+          {error && <p style={{ color: T.red, fontSize: 13, fontFamily: F, textAlign: "center", marginBottom: 12 }}>{error}</p>}
+          <Btn onClick={handleRegisterEmail} disabled={!email.trim() || loading} style={{ width: "100%", marginBottom: 12 }}>
+            {loading ? "Guardando..." : "Continuar"}
+          </Btn>
+          <button onClick={goBack} style={{ background: "none", border: "none", color: T.tm, fontSize: 13, fontFamily: F, cursor: "pointer", display: "block", margin: "0 auto", padding: 8 }}>← Cambiar usuario</button>
+        </div>
+
       ) : mode === "recovery" ? (
         <div style={{ width: "100%", maxWidth: 360, animation: "fadeIn 0.3s ease" }}>
           <div style={{ textAlign: "center", marginBottom: 24 }}>
             <span style={{ fontSize: 40 }}>{selectedUser.emoji}</span>
             <h2 style={{ color: T.w, fontSize: 20, fontWeight: 800, fontFamily: F, margin: "8px 0 4px" }}>Recuperar acceso</h2>
-            <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>Ingresa tu email para resetear el PIN</p>
+            <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>Ingresa el email que registraste para resetear el PIN</p>
           </div>
           <Input label="EMAIL" type="email" value={email} onChange={setEmail} placeholder="tu@email.com" />
           {error && <p style={{ color: T.red, fontSize: 13, fontFamily: F, textAlign: "center", marginBottom: 12 }}>{error}</p>}
           <Btn onClick={handleRecovery} disabled={!email.trim() || loading} style={{ width: "100%", marginBottom: 12 }}>
             {loading ? "Procesando..." : "Resetear PIN"}
           </Btn>
-          <button onClick={() => { setMode("pin"); setError(""); }} style={{ background: "none", border: "none", color: T.tm, fontSize: 13, fontFamily: F, cursor: "pointer", display: "block", margin: "0 auto", padding: 8 }}>← Volver</button>
+          <button onClick={() => { setMode("pin"); setError(""); setEmail(""); }} style={{ background: "none", border: "none", color: T.tm, fontSize: 13, fontFamily: F, cursor: "pointer", display: "block", margin: "0 auto", padding: 8 }}>← Volver</button>
         </div>
+
       ) : (
         <div style={{ width: "100%", maxWidth: 360, animation: "fadeIn 0.3s ease" }}>
           <div style={{ textAlign: "center", marginBottom: 24 }}>
             <span style={{ fontSize: 40 }}>{selectedUser.emoji}</span>
             <h2 style={{ color: T.w, fontSize: 20, fontWeight: 800, fontFamily: F, margin: "8px 0 4px" }}>
-              {mode === "create" ? `Hola ${selectedUser.name}!` : selectedUser.name}
+              {mode === "create" ? `${selectedUser.name}, crea tu PIN` : selectedUser.name}
             </h2>
             <p style={{ color: T.tm, fontSize: 13, fontFamily: F }}>
-              {mode === "create" ? "Crea tu PIN de 4 dígitos" : "Ingresa tu PIN"}
+              {mode === "create" ? "Elige 4 dígitos que puedas recordar" : "Ingresa tu PIN"}
             </p>
           </div>
           {loading ? (
@@ -253,10 +292,10 @@ const Login = ({ onLogin, toast }) => {
           )}
           {error && <p style={{ color: T.red, fontSize: 13, fontFamily: F, textAlign: "center", marginTop: 12 }}>{error}</p>}
           <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 20 }}>
-            <button onClick={() => { setSelectedUser(null); setMode("select"); setError(""); setLockedUntil(null); }}
+            <button onClick={goBack}
               style={{ background: "none", border: "none", color: T.tm, fontSize: 13, fontFamily: F, cursor: "pointer", padding: 8 }}>← Cambiar usuario</button>
-            {(isLocked || (mode === "pin" && attemptsLeft <= 2)) && (
-              <button onClick={() => setMode("recovery")}
+            {mode === "pin" && (isLocked || attemptsLeft <= 2) && (
+              <button onClick={() => { setMode("recovery"); setError(""); setEmail(""); }}
                 style={{ background: "none", border: "none", color: T.accent2, fontSize: 13, fontFamily: F, cursor: "pointer", padding: 8 }}>Olvidé mi PIN</button>
             )}
           </div>
